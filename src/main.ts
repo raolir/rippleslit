@@ -26,8 +26,8 @@ const SHADOW_CATCHER_RENDER_ORDER = 1000;
  * Vite serves everything in `public/` at the root path `/`.
  */
 const WORLD_ASSETS = {
-  splatSpz: '/attic.spz',
-  colliderGlb: '/collider.glb',
+  splatSpz: './attic.spz',
+  colliderGlb: './collider.glb',
 } as const;
 
 /**
@@ -37,7 +37,7 @@ const WORLD_ASSETS = {
  */
 const CHARACTER_ASSETS = {
   /** Path served from `public/` — replace with your own animated character GLB. */
-  glb: '/dog.glb',
+  glb: './dog.glb',
 } as const;
 
 /**
