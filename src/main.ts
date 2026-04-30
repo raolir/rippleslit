@@ -9,7 +9,7 @@ import {
   RenderPass,
   VignetteEffect,
 } from 'postprocessing';
-import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
+import { SparkRenderer, SplatMesh, dyno } from '@sparkjsdev/spark';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 await RAPIER.init();
@@ -139,6 +139,8 @@ const tuning = {
   ppContrast: 0.1,
   ppVignetteDarkness: 0.57,
   ppVignetteOffset: 0.5,
+
+  phase: 0.0,
 };
 
 /** Capsule center Y in world space = feet Y + this (matches `THREE.CapsuleGeometry` layout). */
@@ -323,15 +325,81 @@ const sparkRenderer = new SparkRenderer({
   lodRenderScale: 2,
 });
 scene.add(sparkRenderer);
-const splatMesh = new SplatMesh({
-  url: WORLD_ASSETS.splatSpz,
-  /** Required so the asset gets a LoD tree (`lodSplats`); otherwise Spark renders the full splat count every frame. */
-  lod: true,
-});
-splatMesh.quaternion.identity();
-splatMesh.position.set(0, 0, 0);
-splatMesh.scale.setScalar(tuning.splatUniformScale);
-scene.add(splatMesh);
+
+/** BEGIN DROSTE EFFECT */
+const centerPoint = dyno.dynoVec3(new THREE.Vector3(0, 0, 0));
+const phase = dyno.dynoFloat(1.0);
+
+function createDrosteDynoBlock(basePhase: number) {
+  return dyno.dynoBlock(
+    { gsplat: dyno.Gsplat },
+    { gsplat: dyno.Gsplat },
+    ({ gsplat }) => {
+      const d = new dyno.Dyno({
+        inTypes: { gsplat: dyno.Gsplat, centerPoint: "vec3", phase: "float" },
+        outTypes: { gsplat: dyno.Gsplat },
+        statements: ({ inputs, outputs }) => dyno.unindentLines(`
+          ${outputs.gsplat} = ${inputs.gsplat};
+          vec3 splatPos = ${inputs.gsplat}.center - ${inputs.centerPoint};
+          vec3 splatRay = normalize(splatPos);
+          // --- Log-Polar Coordinates in the Riemann Sphere ---
+          float theta = atan(splatRay.y, splatRay.x);
+          float phi = asin(splatRay.z);
+          float rho = atanh(splatRay.z);
+          // --- Periodic Annulus ---
+          float lowerZ = -0.8;
+          float upperZ = 0.8;
+          float lowerRho = atanh(lowerZ);
+          float upperRho = atanh(upperZ);
+          float period = upperRho - lowerRho;
+          // --- Hide Splats outside Annulus ---
+          ${outputs.gsplat}.rgba.a *= step(lowerRho, rho) * step(rho, upperRho);
+          // --- Shift Rho and compute new Ray ---
+          float newRho = rho + period * ${inputs.phase};
+          float newZ = tanh(newRho);
+          float newTheta = theta;
+          float newPhi = asin(newZ);
+          vec3 newRay = vec3(vec2(cos(newTheta), sin(newTheta)) * cos(newPhi), newZ);
+          // --- Rotation Quaternion ---
+          //float halfAngle = (newPhi - phi) * 0.5;
+          //vec3 rotationAxis = normalize(cross(newRay, splatRay));
+          //vec4 rotationQuat = vec4(rotationAxis * sin(halfAngle), cos(halfAngle));
+          // --- Rotate Splat Position and Orientation ---
+          //vec3 rotatedPos = splatPos + cross(2.0 * rotationQuat.xyz, cross(rotationQuat.xyz, splatPos) + rotationQuat.w * splatPos);
+          vec3 newPos = newRay * length(splatPos) * sqrt(cosh(${inputs.phase}));
+          ${outputs.gsplat}.center = newPos + ${inputs.centerPoint};
+        `),
+      });
+
+      gsplat = d.apply({
+        gsplat,
+        centerPoint: centerPoint,
+        phase: dyno.add(dyno.dynoConst("float", basePhase), phase)
+      }).gsplat;
+
+      return { gsplat };
+    },
+  );
+}
+/** END DROSTE EFFECT */
+
+function createSplatMesh(basePhase: number) {
+  const splatMesh = new SplatMesh({ url: WORLD_ASSETS.splatSpz, lod: true });
+  splatMesh.quaternion.identity();
+  splatMesh.position.set(0, 0, 0);
+  splatMesh.scale.setScalar(tuning.splatUniformScale);
+  scene.add(splatMesh);
+
+  splatMesh.worldModifier = createDrosteDynoBlock(basePhase);
+  splatMesh.updateGenerator();
+
+  return splatMesh;
+}
+
+const splatMeshes: SplatMesh[] = [];
+splatMeshes.push(createSplatMesh(-1.0));
+splatMeshes.push(createSplatMesh( 0.0));
+splatMeshes.push(createSplatMesh( 1.0));
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -934,6 +1002,8 @@ const input = {
   rightPressed: false,
   jump: false,
   sprintPressed: false,
+  phaseForward: false,
+  phaseBackward: false
 };
 
 document.addEventListener('keydown', (event) => {
@@ -963,6 +1033,12 @@ document.addEventListener('keydown', (event) => {
         startCharacterTrick();
       }
       break;
+    case 'ArrowUp':
+      input.phaseForward = true;
+      break;
+    case 'ArrowDown':
+      input.phaseBackward = true;
+      break;
   }
 });
 
@@ -986,6 +1062,12 @@ document.addEventListener('keyup', (event) => {
     case 'ShiftLeft':
     case 'ShiftRight':
       input.sprintPressed = false;
+      break;
+    case 'ArrowUp':
+      input.phaseForward = false;
+      break;
+    case 'ArrowDown':
+      input.phaseBackward = false;
       break;
   }
 });
@@ -1145,7 +1227,7 @@ worldFolder
   .add(tuning, 'splatUniformScale', 0.05, 10, 0.01)
   .name('Splat scale')
   .onChange(() => {
-    splatMesh.scale.setScalar(tuning.splatUniformScale);
+    splatMeshes.forEach( (splatMesh) => { splatMesh.scale.setScalar(tuning.splatUniformScale); });
   });
 worldFolder
   .add(tuning, 'colliderGlbUniformScale', 0.05, 10, 0.01)
@@ -1160,6 +1242,9 @@ const dbgFolder = gui.addFolder('Physics debug (Rapier)');
 dbgFolder.add(tuning, 'showPhysicsDebug').name('Enabled');
 dbgFolder.add(tuning, 'debugBodies').name('Collider wireframe');
 dbgFolder.close();
+
+const drosteFolder = gui.addFolder('Droste Effect');
+drosteFolder.add(tuning, 'phase', -1.0, 1.0).listen();
 
 gui.add(
   {
@@ -1253,6 +1338,11 @@ function animate() {
     newFeet.z,
   );
 
+  centerPoint.value.copy(controls.target);
+  tuning.phase += deltaTime * (input.phaseForward ? 1 : input.phaseBackward ? -1 : 0);
+  tuning.phase = Math.min(Math.max(tuning.phase, -1.0), 1.0);
+  phase.value = tuning.phase;
+
   syncLightingAndShadowsFromTuning();
   syncPostProcessingFromTuning();
   syncRapierDebugFromTuning();
@@ -1289,7 +1379,7 @@ loadingEl.style.cssText = [
 ].join(';');
 loadingEl.textContent = 'Loading splat\u2026';
 document.body.appendChild(loadingEl);
-splatMesh.initialized.then(() => {
+Promise.all(splatMeshes.map((splatMesh) => splatMesh.initialized)).then(() => {
   loadingEl.remove();
 });
 
