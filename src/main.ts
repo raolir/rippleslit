@@ -28,6 +28,7 @@ const SHADOW_CATCHER_RENDER_ORDER = 1000;
 const WORLD_ASSETS = {
   splatSpz: './attic.spz',
   colliderGlb: './collider.glb',
+  panoJpg: './pano.jpg',
 } as const;
 
 /**
@@ -296,7 +297,7 @@ function tryApplyPanoReflectionEnv() {
 }
 
 new THREE.TextureLoader().load(
-  '/pano.jpg',
+  WORLD_ASSETS.panoJpg,
   (tex) => {
     tex.mapping = THREE.EquirectangularReflectionMapping;
     tex.colorSpace = THREE.SRGBColorSpace;
