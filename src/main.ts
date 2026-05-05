@@ -31,7 +31,8 @@ const SHADOW_CATCHER_RENDER_ORDER = 1000;
  * Vite serves everything in `public/` at the root path `/`.
  */
 const WORLD_ASSETS = {
-  splatSpz: './attic.spz',
+  splatSpz1: './attic.spz',
+  splatSpz2: './ship.spz',
   colliderGlb: './collider.glb',
   panoJpg: './pano.jpg',
 } as const;
@@ -389,7 +390,7 @@ function createDrosteDynoBlock(basePhase: number) {
           // --- Phase Shift ---
           rho += period * ${inputs.phase};
           // --- Log-Polar Rotation and Scale (Twisting) ---
-          float ratio = period / (2.0 * PI);
+          float ratio = 2.0 * period / (2.0 * PI);
           float factor = 1.0 / (1.0 + ratio * ratio);
           float newRho = (rho + theta * ratio) * factor;
           float newTheta = (theta - rho * ratio) * factor;
@@ -420,10 +421,10 @@ function createDrosteDynoBlock(basePhase: number) {
 }
 /** END DROSTE EFFECT */
 
-function createSplatMesh(basePhase: number) {
-  const splatMesh = new SplatMesh({ url: WORLD_ASSETS.splatSpz, lod: false });
+function createSplatMesh(url: string, x: number, y: number, z: number, basePhase: number) {
+  const splatMesh = new SplatMesh({ url: url, lod: false });
   splatMesh.quaternion.identity();
-  splatMesh.position.set(0, 0, 0);
+  splatMesh.position.set(x, y, z);
   splatMesh.scale.setScalar(tuning.splatUniformScale);
   scene.add(splatMesh);
 
@@ -434,12 +435,16 @@ function createSplatMesh(basePhase: number) {
 }
 
 const splatMeshes: SplatMesh[] = [];
-splatMeshes.push(createSplatMesh(-3.0));
-splatMeshes.push(createSplatMesh(-2.0));
-splatMeshes.push(createSplatMesh(-1.0));
-splatMeshes.push(createSplatMesh( 0.0));
-splatMeshes.push(createSplatMesh( 1.0));
-splatMeshes.push(createSplatMesh( 2.0));
+
+splatMeshes.push(createSplatMesh(WORLD_ASSETS.splatSpz1, 0.0, 0.0, 0.0, -4.0));
+splatMeshes.push(createSplatMesh(WORLD_ASSETS.splatSpz1, 0.0, 0.0, 0.0, -2.0));
+splatMeshes.push(createSplatMesh(WORLD_ASSETS.splatSpz1, 0.0, 0.0, 0.0,  0.0));
+splatMeshes.push(createSplatMesh(WORLD_ASSETS.splatSpz1, 0.0, 0.0, 0.0,  2.0));
+
+splatMeshes.push(createSplatMesh(WORLD_ASSETS.splatSpz2, -10.0, -27.0, -60.0, -3.0));
+splatMeshes.push(createSplatMesh(WORLD_ASSETS.splatSpz2, -10.0, -27.0, -60.0, -1.0));
+splatMeshes.push(createSplatMesh(WORLD_ASSETS.splatSpz2, -10.0, -27.0, -60.0,  1.0));
+splatMeshes.push(createSplatMesh(WORLD_ASSETS.splatSpz2, -10.0, -27.0, -60.0,  3.0));
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -1375,12 +1380,18 @@ function animate() {
   referenceQuat.value.copy(effectQuaternion.premultiply(effectRotation));
   referencePos.value.copy(controls.target);
 
-  tuning.phase += deltaTime * Number(input.shiftPhase);
-  if (tuning.phase >= 1.0) {
+  let newPhase = tuning.phase + deltaTime * Number(input.shiftPhase);
+  if (tuning.phase < 1.0 && newPhase >= 1.0) {
+    tuning.phase = 1.0;
+    input.shiftPhase = false;
+  }
+  else if (tuning.phase < 2.0 && newPhase >= 2.0) {
     tuning.phase = 0.0;
     input.shiftPhase = false;
   }
-  //tuning.phase = Math.min(Math.max(tuning.phase, -1.0), 1.0);
+  else {
+    tuning.phase = newPhase;
+  }
   phase.value = tuning.phase;
 
   splatMeshes.every((splatMesh) => splatMesh.updateVersion());
