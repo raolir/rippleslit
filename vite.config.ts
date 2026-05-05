@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-  base: '/rippleslit/',
+  base: '/drosteless/',
   server: {
     open: true,
   },

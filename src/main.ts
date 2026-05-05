@@ -380,31 +380,13 @@ function createDrosteDynoBlock(basePhase: number) {
           float lowerRho = atanh(lowerZ);
           float upperRho = atanh(upperZ);
           float period = upperRho - lowerRho;
-          // --- Process Annulus Edges ---
-          float inside = step(lowerRho, rho) * step(rho, upperRho);
-          ${outputs.gsplat}.rgba.a *= inside;
-          float edgeThickness = 0.05;
-          float edge = step(rho, lowerRho + edgeThickness * 0.5) + step(upperRho - edgeThickness * 0.5, rho);
-          vec3 edgeColor = vec3(0.9, 0.7, 0.4);
-          ${outputs.gsplat}.rgba.rgb = mix(${outputs.gsplat}.rgba.rgb, edgeColor, edge);
-          // --- Phase Shift ---
-          rho += period * ${inputs.phase};
           // --- Log-Polar Rotation and Scale (Twisting) ---
           float ratio = 2.0 * period / (2.0 * PI);
-          float factor = 1.0 / (1.0 + ratio * ratio);
-          float newRho = (rho + theta * ratio) * factor;
-          float newTheta = (theta - rho * ratio) * factor;
-          // --- New Ray ---
-          float newZ = tanh(newRho);
-          float newPhi = asin(newZ);
-          vec3 newRay = vec3(vec2(cos(newTheta), sin(newTheta)) * cos(newPhi), newZ);
-          // --- Rotation Quaternion ---
-          vec3 crossRays = cross(splatRay, newRay);
-          float dotRays = dot(splatRay, newRay);
-          vec4 rotationQuat = normalize(vec4(crossRays, 1.0 + dotRays));
-          // --- Rotate Splat Position and Orientation ---
-          ${outputs.gsplat}.center = rotatePos(${inputs.referenceQuat}, rotatePos(rotationQuat, splatPos)) * cosh(newRho) + ${inputs.referencePos};
-          ${outputs.gsplat}.quaternion = rotateQuat(${inputs.referenceQuat}, rotateQuat(rotationQuat, rotateQuat(inverseRot, ${inputs.gsplat}.quaternion)));
+          float newRho = (rho - theta * ratio);
+          float newTheta = (theta + rho * ratio);
+          // --- Droste Effect ---
+          float parity = mod(floor(${inputs.phase} + (newRho - lowerRho)/period), 2.0);
+          ${outputs.gsplat}.rgba.a *= parity;
         `),
       });
 
@@ -435,16 +417,8 @@ function createSplatMesh(url: string, x: number, y: number, z: number, basePhase
 }
 
 const splatMeshes: SplatMesh[] = [];
-
-splatMeshes.push(createSplatMesh(WORLD_ASSETS.splatSpz1, 0.0, 0.0, 0.0, -4.0));
-splatMeshes.push(createSplatMesh(WORLD_ASSETS.splatSpz1, 0.0, 0.0, 0.0, -2.0));
-splatMeshes.push(createSplatMesh(WORLD_ASSETS.splatSpz1, 0.0, 0.0, 0.0,  0.0));
-splatMeshes.push(createSplatMesh(WORLD_ASSETS.splatSpz1, 0.0, 0.0, 0.0,  2.0));
-
-splatMeshes.push(createSplatMesh(WORLD_ASSETS.splatSpz2, -10.0, -27.0, -60.0, -3.0));
-splatMeshes.push(createSplatMesh(WORLD_ASSETS.splatSpz2, -10.0, -27.0, -60.0, -1.0));
-splatMeshes.push(createSplatMesh(WORLD_ASSETS.splatSpz2, -10.0, -27.0, -60.0,  1.0));
-splatMeshes.push(createSplatMesh(WORLD_ASSETS.splatSpz2, -10.0, -27.0, -60.0,  3.0));
+splatMeshes.push(createSplatMesh(WORLD_ASSETS.splatSpz1, 0.0, 0.0, 0.0,  1.0));
+splatMeshes.push(createSplatMesh(WORLD_ASSETS.splatSpz2, -10.0, -27.0, -60.0, 0.0));
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
