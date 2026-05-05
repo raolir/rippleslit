@@ -17,6 +17,7 @@
     "@sparkjsdev/spark": "^2.0.0",
     "lil-gui": "^0.20.0",
     "postprocessing": "^6.39.1",
+    "stats.js": "^0.17.0",
     "three": "0.180.0"
   },
   "devDependencies": {

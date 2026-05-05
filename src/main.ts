@@ -1,3 +1,4 @@
+import Stats from 'stats.js';
 import GUI from 'lil-gui';
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
@@ -13,6 +14,10 @@ import { SparkRenderer, SplatMesh, dyno } from '@sparkjsdev/spark';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 await RAPIER.init();
+
+// Setup stats
+const stats = new Stats();
+document.body.appendChild(stats.dom);
 
 /**
  * Environment GLB `ShadowMaterial` draws in the transparent pass after splats (`renderOrder`).
@@ -141,6 +146,7 @@ const tuning = {
   ppVignetteOffset: 0.5,
 
   phase: 0.0,
+  rotationSpeed: 0.2,
 };
 
 /** Capsule center Y in world space = feet Y + this (matches `THREE.CapsuleGeometry` layout). */
@@ -320,15 +326,22 @@ new THREE.TextureLoader().load(
 /** Gaussian splat background ([Spark docs](https://sparkjs.dev/docs/)); URL from `WORLD_ASSETS`. */
 const sparkRenderer = new SparkRenderer({
   renderer,
-  enableLod: true,
+  enableLod: false,
   /** Higher skips tinier screen-space splats; ~2 is often hard to notice ([performance tuning](https://sparkjs.dev/docs/)). */
-  lodRenderScale: 2,
+  //lodRenderScale: 2,
 });
 scene.add(sparkRenderer);
 
+const effectQuaternion = new THREE.Quaternion(1, 0, 0, 0);
+effectQuaternion.setFromAxisAngle( new THREE.Vector3(0, 0, 1), -Math.PI/2);
+
+const vectorUp = new THREE.Vector3(0, 1, 0);
+const effectRotation = new THREE.Quaternion(1, 0, 0, 0);
+
 /** BEGIN DROSTE EFFECT */
-const centerPoint = dyno.dynoVec3(new THREE.Vector3(0, 0, 0));
-const phase = dyno.dynoFloat(1.0);
+const referencePos = dyno.dynoVec3(new THREE.Vector3(0, 0, 0));
+const referenceQuat = dyno.dynoVec4(new THREE.Vector4(1, 0, 0, 0));
+const phase = dyno.dynoFloat(0.0);
 
 function createDrosteDynoBlock(basePhase: number) {
   return dyno.dynoBlock(
@@ -336,44 +349,68 @@ function createDrosteDynoBlock(basePhase: number) {
     { gsplat: dyno.Gsplat },
     ({ gsplat }) => {
       const d = new dyno.Dyno({
-        inTypes: { gsplat: dyno.Gsplat, centerPoint: "vec3", phase: "float" },
+        inTypes: { gsplat: dyno.Gsplat, referencePos: "vec3", referenceQuat: "vec4", phase: "float" },
         outTypes: { gsplat: dyno.Gsplat },
+        globals: () => [dyno.unindent(`
+          vec3 rotatePos(vec4 rot, vec3 pos) {
+            vec3 rotatedPos = pos + cross(2.0 * rot.xyz, cross(rot.xyz, pos) + rot.w * pos);
+            return rotatedPos;
+          }
+
+          vec4 rotateQuat(vec4 rot, vec4 quat) {
+            vec4 rotatedQuat = rot.w * quat;
+            rotatedQuat.w = rotatedQuat.w - dot(rot.xyz, quat.xyz);
+            rotatedQuat.xyz = rotatedQuat.xyz + quat.w * rot.xyz + cross(rot.xyz, quat.xyz);
+            return rotatedQuat;
+          }
+        `)],
         statements: ({ inputs, outputs }) => dyno.unindentLines(`
           ${outputs.gsplat} = ${inputs.gsplat};
-          vec3 splatPos = ${inputs.gsplat}.center - ${inputs.centerPoint};
+          vec4 inverseRot = ${inputs.referenceQuat} * vec4(1.0, 1.0, 1.0, -1.0);
+          vec3 splatPos = rotatePos(inverseRot, ${inputs.gsplat}.center - ${inputs.referencePos});
           vec3 splatRay = normalize(splatPos);
           // --- Log-Polar Coordinates in the Riemann Sphere ---
           float theta = atan(splatRay.y, splatRay.x);
           float phi = asin(splatRay.z);
           float rho = atanh(splatRay.z);
           // --- Periodic Annulus ---
-          float lowerZ = -0.8;
-          float upperZ = 0.8;
+          float lowerZ = -0.6;
+          float upperZ = 0.6;
           float lowerRho = atanh(lowerZ);
           float upperRho = atanh(upperZ);
           float period = upperRho - lowerRho;
-          // --- Hide Splats outside Annulus ---
-          ${outputs.gsplat}.rgba.a *= step(lowerRho, rho) * step(rho, upperRho);
-          // --- Shift Rho and compute new Ray ---
-          float newRho = rho + period * ${inputs.phase};
+          // --- Process Annulus Edges ---
+          float inside = step(lowerRho, rho) * step(rho, upperRho);
+          ${outputs.gsplat}.rgba.a *= inside;
+          float edgeThickness = 0.05;
+          float edge = step(rho, lowerRho + edgeThickness * 0.5) + step(upperRho - edgeThickness * 0.5, rho);
+          vec3 edgeColor = vec3(0.9, 0.7, 0.4);
+          ${outputs.gsplat}.rgba.rgb = mix(${outputs.gsplat}.rgba.rgb, edgeColor, edge);
+          // --- Phase Shift ---
+          rho += period * ${inputs.phase};
+          // --- Log-Polar Rotation and Scale (Twisting) ---
+          float ratio = period / (2.0 * PI);
+          float factor = 1.0 / (1.0 + ratio * ratio);
+          float newRho = (rho + theta * ratio) * factor;
+          float newTheta = (theta - rho * ratio) * factor;
+          // --- New Ray ---
           float newZ = tanh(newRho);
-          float newTheta = theta;
           float newPhi = asin(newZ);
           vec3 newRay = vec3(vec2(cos(newTheta), sin(newTheta)) * cos(newPhi), newZ);
           // --- Rotation Quaternion ---
-          //float halfAngle = (newPhi - phi) * 0.5;
-          //vec3 rotationAxis = normalize(cross(newRay, splatRay));
-          //vec4 rotationQuat = vec4(rotationAxis * sin(halfAngle), cos(halfAngle));
+          vec3 crossRays = cross(splatRay, newRay);
+          float dotRays = dot(splatRay, newRay);
+          vec4 rotationQuat = normalize(vec4(crossRays, 1.0 + dotRays));
           // --- Rotate Splat Position and Orientation ---
-          //vec3 rotatedPos = splatPos + cross(2.0 * rotationQuat.xyz, cross(rotationQuat.xyz, splatPos) + rotationQuat.w * splatPos);
-          vec3 newPos = newRay * length(splatPos) * sqrt(cosh(${inputs.phase}));
-          ${outputs.gsplat}.center = newPos + ${inputs.centerPoint};
+          ${outputs.gsplat}.center = rotatePos(${inputs.referenceQuat}, rotatePos(rotationQuat, splatPos)) * cosh(newRho) + ${inputs.referencePos};
+          ${outputs.gsplat}.quaternion = rotateQuat(${inputs.referenceQuat}, rotateQuat(rotationQuat, rotateQuat(inverseRot, ${inputs.gsplat}.quaternion)));
         `),
       });
 
       gsplat = d.apply({
         gsplat,
-        centerPoint: centerPoint,
+        referencePos: referencePos,
+        referenceQuat: referenceQuat,
         phase: dyno.add(dyno.dynoConst("float", basePhase), phase)
       }).gsplat;
 
@@ -384,7 +421,7 @@ function createDrosteDynoBlock(basePhase: number) {
 /** END DROSTE EFFECT */
 
 function createSplatMesh(basePhase: number) {
-  const splatMesh = new SplatMesh({ url: WORLD_ASSETS.splatSpz, lod: true });
+  const splatMesh = new SplatMesh({ url: WORLD_ASSETS.splatSpz, lod: false });
   splatMesh.quaternion.identity();
   splatMesh.position.set(0, 0, 0);
   splatMesh.scale.setScalar(tuning.splatUniformScale);
@@ -397,9 +434,12 @@ function createSplatMesh(basePhase: number) {
 }
 
 const splatMeshes: SplatMesh[] = [];
+splatMeshes.push(createSplatMesh(-3.0));
+splatMeshes.push(createSplatMesh(-2.0));
 splatMeshes.push(createSplatMesh(-1.0));
 splatMeshes.push(createSplatMesh( 0.0));
 splatMeshes.push(createSplatMesh( 1.0));
+splatMeshes.push(createSplatMesh( 2.0));
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -1002,8 +1042,7 @@ const input = {
   rightPressed: false,
   jump: false,
   sprintPressed: false,
-  phaseForward: false,
-  phaseBackward: false
+  shiftPhase: false
 };
 
 document.addEventListener('keydown', (event) => {
@@ -1033,11 +1072,8 @@ document.addEventListener('keydown', (event) => {
         startCharacterTrick();
       }
       break;
-    case 'ArrowUp':
-      input.phaseForward = true;
-      break;
-    case 'ArrowDown':
-      input.phaseBackward = true;
+    case 'KeyE':
+      input.shiftPhase = true;
       break;
   }
 });
@@ -1062,12 +1098,6 @@ document.addEventListener('keyup', (event) => {
     case 'ShiftLeft':
     case 'ShiftRight':
       input.sprintPressed = false;
-      break;
-    case 'ArrowUp':
-      input.phaseForward = false;
-      break;
-    case 'ArrowDown':
-      input.phaseBackward = false;
       break;
   }
 });
@@ -1245,6 +1275,7 @@ dbgFolder.close();
 
 const drosteFolder = gui.addFolder('Droste Effect');
 drosteFolder.add(tuning, 'phase', -1.0, 1.0).listen();
+drosteFolder.add(tuning, 'rotationSpeed').name('Rotation Speed');
 
 gui.add(
   {
@@ -1264,6 +1295,8 @@ gui.add(
 
 // ─── Main loop ──────────────────────────────────────────────────────────────
 function animate() {
+  stats.begin();
+
   requestAnimationFrame(animate);
 
   const currentTime = performance.now();
@@ -1338,10 +1371,19 @@ function animate() {
     newFeet.z,
   );
 
-  centerPoint.value.copy(controls.target);
-  tuning.phase += deltaTime * (input.phaseForward ? 1 : input.phaseBackward ? -1 : 0);
-  tuning.phase = Math.min(Math.max(tuning.phase, -1.0), 1.0);
+  effectRotation.setFromAxisAngle(vectorUp, deltaTime * tuning.rotationSpeed)
+  referenceQuat.value.copy(effectQuaternion.premultiply(effectRotation));
+  referencePos.value.copy(controls.target);
+
+  tuning.phase += deltaTime * Number(input.shiftPhase);
+  if (tuning.phase >= 1.0) {
+    tuning.phase = 0.0;
+    input.shiftPhase = false;
+  }
+  //tuning.phase = Math.min(Math.max(tuning.phase, -1.0), 1.0);
   phase.value = tuning.phase;
+
+  splatMeshes.every((splatMesh) => splatMesh.updateVersion());
 
   syncLightingAndShadowsFromTuning();
   syncPostProcessingFromTuning();
@@ -1353,6 +1395,8 @@ function animate() {
   updateCharacterAnimations(deltaTime);
   controls.update();
   composer.render(deltaTime);
+
+  stats.end();
 }
 
 // ─── HUD ────────────────────────────────────────────────────────────────────
